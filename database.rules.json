@@ -15,7 +15,7 @@
     "roles": {
       ".read": "auth != null",
       "$code": {
-        ".write": "auth != null && root.child('codes').child('YOURCODE').val() === auth.uid"
+        ".write": "auth != null && root.child('codes').child('QXDPVHMZ').val() === auth.uid"
       }
     },
     "rooms": {
