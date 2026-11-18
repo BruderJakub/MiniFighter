@@ -4,13 +4,14 @@
 //    (and into database.rules.json), then upload this file again.
 window.GAME_CONFIG = {
   firebase: {
-    apiKey: "PASTE_YOUR_API_KEY",
-    authDomain: "your-project.firebaseapp.com",
-    databaseURL: "https://your-project-default-rtdb.europe-west1.firebasedatabase.app",
-    projectId: "your-project",
-    storageBucket: "your-project.appspot.com",
-    messagingSenderId: "000000000000",
-    appId: "1:000000000000:web:0000000000000000"
+    apiKey: "AIzaSyDsOtYZQbm99pxGYorcetDP0YJtj3JgrZY",
+    authDomain: "minifighter-1.firebaseapp.com",
+    databaseURL: "https://minifighter-1-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "minifighter-1",
+    storageBucket: "minifighter-1.firebasestorage.app",
+    messagingSenderId: "1055184731045",
+    appId: "1:1055184731045:web:bc148dcaa6d9ccc3f1464c",
+    measurementId: "G-2KEDXJY9JT"
   },
-  ownerCode: "YOURCODE"
+  ownerCode: "QXDPVHMZ"
 };
