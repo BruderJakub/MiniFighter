@@ -1703,7 +1703,7 @@ const SUPER_NEED = { hooker: 8, lion: 6, sprocket: 7, gravey: 6 };
 const HERO_TILE = [2, 6];
 const WINS_NEEDED = 3;
 const SUPER_HITS = 8, STUN_TIME = 1.5;
-const ENERGY = { start: 4, win: 6, loss: 4 };
+const ENERGY = { start: 3, win: 4, loss: 6 };   // losing a round gives more energy, so the loser can catch up
 const perksUnlocked = (lv) => STAR_LV.filter(l => l <= lv).length;
 
 const B = { on: false };
