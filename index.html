@@ -1119,8 +1119,10 @@ async function boot() {
 }
 
 function makePortraits() {
+  // draw the pictures with the shared canvas hidden off-screen, then put it back exactly where it was
+  const home = canvas.parentElement, next = canvas.nextSibling;
   document.body.appendChild(canvas);
-  canvas.style.cssText = 'position:fixed;left:-9999px;top:0;width:256px;height:256px';
+  canvas.style.cssText = 'position:fixed;left:-9999px;top:0;width:256px;height:256px;visibility:hidden';
   canvas.width = canvas.height = 256; const ps = E.pixelScale; E.pixelScale = 1;
   for (const [store, team] of [[PORTRAIT, myRgb()], [ENEMY_PORTRAIT, enemyRgb()]]) {
     for (const id of ORDER) {
@@ -1139,6 +1141,8 @@ function makePortraits() {
     for (const pr of A.gball.meshes[0]) E.drawPrim(pr, M4.fromTRS([0, 0, 0], Q.yaw(0.5), [1, 1, 1]), pr.mat.tex, [...rgb, 1]);
     BALLIMG[k] = canvas.toDataURL('image/png');
   }
+  E.clear([0, 0, 0, 0]);
+  if (home && home !== document.body) home.insertBefore(canvas, next && next.parentNode === home ? next : null); else canvas.remove();
   canvas.style.cssText = ''; E.pixelScale = ps;
 }
 function refreshPortraits() { makePortraits(); renderAll(); }
