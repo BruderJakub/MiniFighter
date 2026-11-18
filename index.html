@@ -417,6 +417,24 @@ input[type=text] { min-height:44px; border:none; background:var(--nav); color:#f
 
 #profile .card { max-width:400px; overflow-x:hidden; }
 .olbox p.sub { color:#DDD8F6; }
+
+/* ---------- tournament */
+.tourhud .hearts { display:flex; gap:3px; }
+.heart { display:flex; color:#4A4470; } .heart.on { color:#FF4D6D; filter:drop-shadow(0 2px 0 #7A1028); }
+.waitnext { position:absolute; left:50%; top:64px; transform:translateX(-50%); z-index:5; background:rgba(14,10,30,.8); color:#fff; padding:5px 12px; font-weight:800; font-size:13px; white-space:nowrap;
+  box-shadow:0 -2px 0 0 var(--ink), 0 2px 0 0 var(--ink), -2px 0 0 0 var(--ink), 2px 0 0 0 var(--ink); }
+.tlist { display:flex; flex-direction:column; gap:4px; }
+.tseat, .trow { display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--panel2); padding:5px 9px; font-weight:800; font-size:13px; }
+.tseat.empty { background:rgba(0,0,0,.2); color:var(--muted); font-weight:700; }
+.trow.me { box-shadow:inset 3px 0 0 var(--gold); } .trow.out { opacity:.55; }
+.trow small { color:var(--muted); font-weight:700; } .trow .hs { display:flex; gap:2px; font:400 18px 'VT323',monospace; }
+.tlist.small { width:min(320px, 90%); max-height:180px; overflow:auto; }
+.tlist.small .trow { padding:3px 8px; font-size:12px; }
+.seg:has(> :nth-child(4)) { grid-template-columns:repeat(4, minmax(0,1fr)); }
+.seg:has(> :nth-child(4)) button { font-size:15px; padding-left:2px; padding-right:2px; }
+
+.trow b { font:800 13px 'Nunito', system-ui, sans-serif; color:#fff; letter-spacing:0; }
+.tlist.small .trow b { font-size:12px; }
 </style>
 </head>
 <body>
@@ -802,6 +820,27 @@ async function FirebaseDriver(conf) {
     async txn(p, fn) { const r = await R(p).transaction(v => { const n = fn(v); return n === undefined ? undefined : n; }); return { committed: r.committed, val: r.snapshot.val() }; },
     onDisconnectRemove: p => R(p).onDisconnect().remove(),
     cancelDisconnect: p => R(p).onDisconnect().cancel(),
+  };
+}
+
+/* ---------- memory driver: the same API kept in memory (offline tournaments run on it) */
+function MemoryDriver() {
+  let tree = {}; const subs = [];
+  const parts = p => p.split('/').filter(Boolean);
+  const read = p => parts(p).reduce((o, k) => (o == null ? null : o[k] === undefined ? null : o[k]), tree);
+  const notify = () => setTimeout(() => { for (const s of subs.slice()) { const v = JSON.stringify(read(s.p)); if (v !== s.last) { s.last = v; s.cb(JSON.parse(v)); } } }, 0);
+  const write = (p, v) => {
+    const ks = parts(p); let o = tree;
+    for (let i = 0; i < ks.length - 1; i++) { if (typeof o[ks[i]] !== 'object' || o[ks[i]] === null) o[ks[i]] = {}; o = o[ks[i]]; }
+    if (v === null || v === undefined) delete o[ks[ks.length - 1]]; else o[ks[ks.length - 1]] = JSON.parse(JSON.stringify(v));
+    notify();
+  };
+  return {
+    async signIn() { return 'me'; }, get: async p => JSON.parse(JSON.stringify(read(p))), set: async (p, v) => write(p, v),
+    update: async (p, obj) => { for (const [k, v] of Object.entries(obj)) write(p + '/' + k, v); }, remove: async p => write(p, null),
+    on(p, cb) { const s = { p, cb, last: JSON.stringify(read(p)) }; subs.push(s); setTimeout(() => cb(JSON.parse(s.last)), 0); return () => { const i = subs.indexOf(s); if (i >= 0) subs.splice(i, 1); }; },
+    async txn(p, fn) { const cur = read(p), nv = fn(cur); if (nv === undefined) return { committed: false, val: cur }; write(p, nv); return { committed: true, val: nv }; },
+    onDisconnectRemove() {}, cancelDisconnect() {},
   };
 }
 
@@ -1237,10 +1276,10 @@ function renderPlay() {
       <div id="deckStars"></div>
       ${dropsLeft() > 0 ? `<div class="dropsbadge">${ballImg('Rare', 22)}<span>${dropsLeft()}/${DROPS_PER_DAY} daily drops left \u00b7 win to earn</span></div>` : `<div class="dropsbadge done"><span>Daily drops done \u00b7 back tomorrow</span></div>`}
       ${deckValid() ? '' : `<div class="deckwarn">Pick ${deckNeed() - S.deck.minis.length} more mini${deckNeed() - S.deck.minis.length > 1 ? 's' : ''}</div>`}</div>
-    <div class="seg" role="group" aria-label="Match type">${[['ranked', 'Ranked'], ['friendly', 'Friendly'], ['bot', 'vs Bot']].map(([id, l]) =>
+    <div class="seg" role="group" aria-label="Match type">${[['ranked', 'Ranked'], ['tour', 'Tournament'], ['friendly', 'Friendly'], ['bot', 'vs Bot']].map(([id, l]) =>
       `<button data-mode="${id}" class="${mode === id ? 'on' : ''}" aria-pressed="${mode === id}">${l}</button>`).join('')}</div>
     <button class="btn green big ${deckValid() ? '' : 'dim'}" id="playBtn">${mode === 'bot' ? 'Start' : 'Play'}</button>
-    <div class="sub" style="text-align:center;margin-top:-6px">${mode === 'ranked' ? (Net.online() ? 'Live opponent, or the bot if no one is searching \u00b7 win trophies' : 'Win to earn trophies') : mode === 'friendly' ? 'Battle a friend with a room code \u00b7 no trophies' : 'Practice against the bot \u00b7 no trophies'}</div></div>`;
+    <div class="sub" style="text-align:center;margin-top:-6px">${mode === 'ranked' ? (Net.online() ? 'Live opponent, or the bot if no one is searching \u00b7 win trophies' : 'Win to earn trophies') : mode === 'friendly' ? 'Battle a friend with a room code \u00b7 no trophies' : mode === 'tour' ? '8 players, 3 hearts each \u00b7 last one standing wins' : 'Practice against the bot \u00b7 no trophies'}</div></div>`;
   const wrap = s.querySelector('#playStageWrap');
   const st = keepStage || el('div'); st.id = 'playStage'; st.style.cssText = 'position:absolute;inset:0'; wrap.prepend(st);
   if (current === 'play' && canvas.parentElement !== st) st.appendChild(canvas);
@@ -1250,7 +1289,7 @@ function renderPlay() {
   s.querySelector('#editDeck').onclick = () => openDeck('mini');
   fillDeckStars();
   wrap.onclick = () => openDeck('mini'); wrap.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDeck('mini'); } };
-  s.querySelector('#playBtn').onclick = () => { if (!deckValid()) { toast(`Your deck needs exactly ${deckNeed()} minis`); openDeck('mini'); return; } mode === 'friendly' ? openFriendly() : mode === 'ranked' ? findRanked() : startBattle('bot'); };
+  s.querySelector('#playBtn').onclick = () => { if (!deckValid()) { toast(`Your deck needs exactly ${deckNeed()} minis`); openDeck('mini'); return; } mode === 'friendly' ? openFriendly() : mode === 'ranked' ? findRanked() : mode === 'tour' ? startTournament() : startBattle('bot'); };
 }
 
 let menuActors = [], menuCove = null, menuT = 0;
@@ -1701,7 +1740,7 @@ const OFFER_WEIGHT = { rusty: 30, bucky: 25, fox: 30, dog: 25, phantom: 22, nigh
 const HERO_WEIGHT = 15;
 const SUPER_NEED = { hooker: 8, lion: 6, sprocket: 7, gravey: 6 };
 const HERO_TILE = [2, 6];
-const WINS_NEEDED = 3;
+const WINS_NEEDED = 5;   // first to 5 round wins takes the match
 const SUPER_HITS = 8, STUN_TIME = 1.5;
 const ENERGY = { start: 3, win: 4, loss: 6 };   // losing a round gives more energy, so the loser can catch up
 const perksUnlocked = (lv) => STAR_LV.filter(l => l <= lv).length;
@@ -1739,7 +1778,7 @@ function newSide(side, levels) {
 function setupRound(first) {
   B.phase = 'deploy'; B.roundT = 0; B.units = []; B.bullets = []; B.drag = null; B.picker = null; B.sel = null; B.moveDrag = null; B.dragId = null; B.hoverTile = null;
   for (const sd of B.side) rollOffers(sd, true);
-  if (B.mode === 'online') { if (!first) onlineRoundStart(); } else botTurn();
+  if (B.mode === 'online') { if (!first) onlineRoundStart(); } else if (B.mode !== 'tour') botTurn();
   B.preview = {};
   renderBattle();
   if (first) banner('Place your crew', 1200);
@@ -1771,6 +1810,7 @@ function nextPerk(sd, id) {
 function confirmLeave() { const b = $('#leaveBtn'); if (b && b.dataset.sure) return true; if (b) { b.dataset.sure = 1; b.textContent = 'Sure?'; setTimeout(() => { if (b.isConnected) { delete b.dataset.sure; b.textContent = 'Leave'; } }, 2500); } return false; }
 function buy(sd, offerIdx, { tile, perk } = {}) {
   if (B.mode === 'online' && sd === B.side[0] && OL.sent) return false;
+  if (B.mode === 'tour' && sd === B.side[0] && TR.sent) return false;
   const of = sd.offers[offerIdx]; if (!of || of.sold) return false;
   const id = of.id; if (!canBuy(sd, id)) return false;
   const own = sd.owned[id];
@@ -1795,15 +1835,15 @@ function sell(sd, id) {
 function occupiedBy(sd, tile) { return Object.keys(sd.owned).find(id => sd.owned[id].tile[0] === tile[0] && sd.owned[id].tile[1] === tile[1]); }
 
 /* ---------- bot */
-function botTurn() {
-  const sd = B.side[1];
+function botTurn() { botTurnFor(B.side[1], false); }
+function botTurnFor(sd, home) {   // home: the bot builds on rows 4-7 (tournament armies are stored that way)
   for (let guard = 0; guard < 8; guard++) {
     const i = sd.offers.findIndex(o => !o.sold && canBuy(sd, o.id));
     if (i < 0) { if (sd.energy >= 4 && rollOffers(sd, false)) continue; break; }
     const id = sd.offers[i].id;
     let tile;
     if (!sd.owned[id]) {
-      const rows = RANGE[id] > 1 ? [0, 1] : [2, 3];
+      const rows = home ? (RANGE[id] > 1 ? [7, 6] : [5, 4]) : RANGE[id] > 1 ? [0, 1] : [2, 3];
       const free = []; for (const r of rows) for (let c = 0; c < 5; c++) if (!occupiedBy(sd, [c, r])) free.push([c, r]);
       if (!free.length) { sd.offers[i].sold = true; continue; }
       tile = free[Math.floor(Math.random() * free.length)];
@@ -1844,14 +1884,25 @@ function spawnUnit(id, side, tile, perks, lv, opts = {}) {
   return u;
 }
 // the two armies in canonical form: side 0 = host / you vs bot, side 1 = guest / bot; side 1 tiles are mirrored
+function simHeadless(army0, army1, seed) {
+  const keys = ['units', 'timers', 'bullets', 'puffs', 'roundT', 'simAcc', 'army', 'phase', 'meSide', 'onRoundEnd', 'headless', 'botSide', 'mode', 'armies', 'picker'];
+  const keep = {}; for (const k of keys) keep[k] = B[k]; const keepRng = RNG;
+  let res = 0;
+  try {
+    Object.assign(B, { headless: true, mode: 'tour', meSide: 0, puffs: [], armies: [army0, army1], onRoundEnd: w => { res = w; B.phase = 'hdone'; return false; } });
+    fight(seed);
+    for (let n = 0; B.phase === 'fight' && n < 60 * 70; n++) { stepFight(SIM_STEP); for (const u of B.units) u.a.update(SIM_STEP); updateBullets(SIM_STEP, false, 'sim'); }
+  } finally { for (const k of keys) B[k] = keep[k]; RNG = keepRng; }
+  return res;
+}
 function canonicalArmies() {
-  if (B.mode !== 'online') return [{ owned: B.side[0].owned, levels: B.side[0].levels }, { owned: B.side[1].owned, levels: B.side[1].levels }];
+  if (B.mode !== 'online' && B.mode !== 'tour') return [{ owned: B.side[0].owned, levels: B.side[0].levels }, { owned: B.side[1].owned, levels: B.side[1].levels }];
   return B.armies;   // filled in by the online code from both players' submitted deployments
 }
 function fight(seed) {
   RNG = mulberry32(seed !== undefined ? seed : (Math.random() * 2 ** 31) | 0);
   B.units = []; B.timers = []; B.simAcc = 0; B.bullets = [];
-  B.botSide = B.mode !== 'online';
+  B.botSide = B.mode !== 'online' && B.mode !== 'tour';
   B.army = canonicalArmies();
   B.army.forEach((army, side) => { for (const id of Object.keys(army.owned).sort()) {
     const own = army.owned[id]; B.units.push(spawnUnit(id, side, own.tile, own.perks, army.levels[id] || 1)); } });
@@ -1861,7 +1912,8 @@ function fight(seed) {
     for (let k = 0; k < n; k++) { const t = freeNeighbour(u.c, u.r); if (t) B.units.push(spawnUnit('deckhand', u.side, t, [], 1)); }
   }
   for (const side of [0, 1]) applyClasses(side);
-  B.phase = 'fight'; B.roundT = 0; B.picker = null; renderBattle(); banner('Fight!', 900);
+  B.phase = 'fight'; B.roundT = 0; B.picker = null;
+  if (!B.headless) { renderBattle(); banner('Fight!', 900); }
   openingShots(); sneakyDashes(); coinToss();
 }
 /* ---------- classes: 2 / 3 / 4+ different characters of a class on the board buff those characters */
@@ -2047,6 +2099,7 @@ function hit(att, tgt, dmg, opts = {}) {
   }
 }
 function popText(u, txt, color) {
+  if (B.headless) return;
   const p = E.project([u.a.pos[0], u.hero ? 2.0 : 1.5, u.a.pos[2]]), d = el('div', 'pop', txt);
   d.style.left = p[0] + 'px'; d.style.top = p[1] + 'px'; if (color) d.style.color = color;
   const host = $('#bars'); if (host) { host.appendChild(d); setTimeout(() => d.remove(), 800); }
@@ -2106,7 +2159,7 @@ function attack(u, t) {
         if (u.perks.includes(2)) slow(t, 2);
       }
       if (u.id === 'lootie' && u.stabs % 3 === 0) {
-        const sd = B.side[toLocal(u.side)], cap = u.perks.includes(0) ? 4 : 2;
+        const sd = B.headless ? {} : B.side[toLocal(u.side)], cap = u.perks.includes(0) ? 4 : 2;
         if ((sd.stolen || 0) < cap) { sd.stolen = (sd.stolen || 0) + 1; popText(u, '+1 energy', '#FFD84A'); }
       }
     };
@@ -2293,7 +2346,7 @@ function stepFight(dt) {
   }
 }
 function endRound(winCanon) {
-  if (B.mode === 'online' && B.onRoundEnd && B.onRoundEnd(winCanon) === false) return;   // the online code may take over
+  if (B.onRoundEnd && B.onRoundEnd(winCanon) === false) return;   // online / tournament / background fights take over here
   const win = toLocal(winCanon);
   B.phase = 'roundEnd'; B.score[win]++;
   for (const sd of B.side) { sd.energy += (sd.side === win ? ENERGY.win : ENERGY.loss) + (sd.stolen || 0); if (sd.stolen) { if (sd.side === 0) toast(`Lootie stole ${sd.stolen} energy for you`); sd.stolen = 0; } }
@@ -2332,7 +2385,7 @@ function endMatch(won) {
   if (drop) r.querySelector('#dropBall').onclick = openDrop;
   r.querySelector('#homeBtn').onclick = () => { if (!opened) openDrop(); B.on = false; go('play'); };
 }
-function banner(txt, ms, color) { const b = $('#banner'); if (!b) return; b.textContent = txt; b.style.color = color || '#FFC83D'; b.classList.add('on'); setTimeout(() => b.classList.remove('on'), ms); }
+function banner(txt, ms, color) { if (B.headless) return; const b = $('#banner'); if (!b) return; b.textContent = txt; b.style.color = color || '#FFC83D'; b.classList.add('on'); setTimeout(() => b.classList.remove('on'), ms); }
 
 /* ---------- deploy UI: offers, drag and drop, perk picker */
 const ENERGY_IC = '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="#FFC83D" stroke="#C98A00" stroke-width="1.2" stroke-linejoin="round"/></svg>';
@@ -2346,7 +2399,8 @@ function renderBattle() {
   const s = $('#battle'); const keep = $('#battleStage'); const me = B.side[0];
   const dots = side => Array.from({ length: WINS_NEEDED }, (_, i) => `<span class="dot" style="background:${B.score[side] > i ? rgbCss(side ? enemyRgb() : myRgb()) : 'transparent'}"></span>`).join('');
   const dep = B.phase === 'deploy';
-  s.innerHTML = `<div class="hud"><div class="score">${dots(0)}</div><div class="tag disp">Round ${B.round}${B.mode === 'online' ? `<small class="vs">vs ${B.oppName.replace(/</g, '')}</small>` : ''}</div><div class="score">${dots(1)}</div></div>
+  const hud = B.mode === 'tour' ? tourHud() : `<div class="hud"><div class="score">${dots(0)}</div><div class="tag disp">Round ${B.round}${B.mode === 'online' ? `<small class="vs">vs ${B.oppName.replace(/</g, '')}</small>` : ''}</div><div class="score">${dots(1)}</div></div>`;
+  s.innerHTML = `${hud}
     <div id="bWrap"><div class="banner disp" id="banner"></div><div id="bars"></div><div id="tags"></div><div id="classHud">${classHudHTML(0)}</div><div class="result" id="result"></div></div>
     ${dep ? `<div class="deploy" id="deployPanel">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div class="pill" style="font-size:16px;padding:4px 12px 4px 6px">${ENERGY_IC}<span class="disp">${me.energy}</span></div>
@@ -2355,16 +2409,18 @@ function renderBattle() {
       <div class="hand">${me.offers.map((o, i) => {
         const id = o.id, ok = !o.sold && canBuy(me, id), st = o.sold ? 'Bought' : offerStatus(me, id);
         return `<button data-o="${i}" class="ucard ${o.sold ? 'used' : ''} ${B.sel === i ? 'sel' : ''}" ${ok ? '' : 'aria-disabled="true"'} style="${ok || o.sold ? '' : 'opacity:.55'};touch-action:none">${unitCard(id, { foot: st })}</button>`; }).join('')}</div>
-      <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px"><button class="btn" id="leaveBtn">Leave</button>${B.mode === 'online' && OL.sent ? `<button class="btn disp" id="fightBtn" disabled style="font-size:20px">Waiting for ${B.oppName.replace(/</g, '')}…</button>`
-        : `<button class="btn green disp" id="fightBtn" style="font-size:22px">${B.mode === 'online' ? `Ready! <small id="olTimer" class="oltimer">${OL.left}s</small>` : 'Fight!'}</button>`}</div>
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px"><button class="btn" id="leaveBtn">Leave</button>${(B.mode === 'online' && OL.sent) || (B.mode === 'tour' && TR.sent) ? `<button class="btn disp" id="fightBtn" disabled style="font-size:20px">Waiting for ${B.oppName.replace(/</g, '')}…</button>`
+        : `<button class="btn green disp" id="fightBtn" style="font-size:22px">${B.mode === 'online' ? `Ready! <small id="olTimer" class="oltimer">${OL.left}s</small>` : B.mode === 'tour' ? `Ready! <small id="olTimer" class="oltimer">${TR.left}s</small>` : 'Fight!'}</button>`}</div>
       </div><div id="pickerHost"></div>` : ''}`;
   const st = keep || el('div'); st.id = 'battleStage'; st.className = 'stage'; st.style.cssText = 'position:absolute;inset:0;touch-action:none'; s.querySelector('#bWrap').prepend(st);
   if (canvas.parentElement !== st) st.appendChild(canvas);
   B.barEls = new Map(); bindClassHud();
+  const sbt = s.querySelector('#standBtn'); if (sbt) sbt.onclick = showStandings;
   if (!dep) return;
-  s.querySelector('#fightBtn').onclick = () => (B.mode === 'online' ? submitArmy() : fight());
+  s.querySelector('#fightBtn').onclick = () => (B.mode === 'online' ? submitArmy() : B.mode === 'tour' ? tourSubmit() : fight());
   s.querySelector('#leaveBtn').onclick = () => {
     if (B.mode === 'online') { if (!confirmLeave()) return; leaveOnline(); B.on = false; go('play'); toast('You left the match'); return; }
+    if (B.mode === 'tour') { if (!confirmLeave()) return; tourLeave(); return; }
     B.on = false; go('play'); };
   s.querySelector('#rerollBtn').onclick = () => { if (rollOffers(me, false)) { B.sel = null; renderBattle(); } };
   s.querySelectorAll('[data-o]').forEach(b => bindOffer(b, +b.dataset.o));
@@ -2759,6 +2815,345 @@ function leaveOnline() {
   if (!OL.room) return;
   Net.drv.set(`rooms/${OL.room}/left/${OL.side}`, true);
   OL.over = true; olCleanup();
+}
+
+'use strict';
+/* ============================================================ TOURNAMENT
+   8 players, 3 hearts each. Every round everyone is paired with someone still in, losing a round costs a heart,
+   and the last player with hearts left wins. Empty seats are filled with bots.
+   One client is the host: it seats players, builds the bots' armies, pairs everyone, plays bot-vs-bot rounds
+   in the background and hands out hearts. Offline, you are the host and the data lives in memory.
+   tours/{ID}/meta    { state: lobby|running|over, host, seed, round, deadline, beat }
+   tours/{ID}/players/{pid} { name, bot, hearts, place }
+   tours/{ID}/pairs/{round}  [[a, b], [c, d, ghostOf] ...]  (a lone player fights a copy of someone's army)
+   tours/{ID}/army/{round}/{pid}   army in home rows 4-7
+   tours/{ID}/result/{round}/{pid} 'W' | 'L' */
+const TOUR_N = 8, HEARTS = 3, LOBBY_WAIT = 20, TOUR_DEPLOY = 45;
+const TR = { id: null, drv: null, me: null, host: false, unsub: [], round: 0, players: {}, sent: false, left: TOUR_DEPLOY, out: false };
+const BOT_NAMES = ['Barnacle Bot', 'Sir Bolts', 'Grumbleweed', 'Captain Crumb', 'Misty Moss', 'Rattlebones', 'Dame Dodo', 'Boomer Bob', 'Pip Squeak', 'Old Salt'];
+const mirrorArmy = a => { const o = {}; for (const [id, u] of Object.entries(a.owned || {})) o[id] = { tile: [4 - u.tile[0], 7 - u.tile[1]], perks: (u.perks || []).slice(), spent: u.spent || 0 }; return { owned: o, levels: a.levels || {} }; };
+const cleanArmy = x => { const owned = {}; for (const [id, u] of Object.entries((x && x.owned) || {})) owned[id] = { tile: [u.tile[0], u.tile[1]], perks: Array.isArray(u.perks) ? u.perks.slice() : Object.values(u.perks || {}), spent: u.spent || 0 }; return { owned, levels: (x && x.levels) || {} }; };
+const tp = p => `tours/${TR.id}/${p}`;
+
+function trCleanup() { TR.unsub.forEach(f => { try { f(); } catch (e) {} }); TR.unsub = []; clearInterval(TR.timer); }
+
+/* ---------- joining */
+async function startTournament() {
+  trCleanup();
+  Object.assign(TR, { round: 0, players: {}, sent: false, out: false, place: null, hostEngine: null, joined: false });
+  if (!Net.online()) {                       // offline: you and 7 bots
+    TR.drv = MemoryDriver(); TR.id = 'LOCAL'; TR.me = Net.code || 'YOU'; TR.host = true;
+    await TR.drv.set(tp('meta'), { state: 'lobby', host: TR.me, seed: (Math.random() * 2 ** 31) | 0, created: Date.now() });
+    await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
+    return hostBegin();
+  }
+  TR.drv = Net.drv; TR.me = Net.code;
+  const m = $('#deckModal');
+  m.innerHTML = `<div class="card olbox" role="dialog" aria-label="Tournament lobby"><h2 class="title disp" style="font-size:26px">Tournament</h2>
+    <div class="searching"><div class="spin"></div><span class="disp" id="tWait">Looking for players…</span></div>
+    <div id="tList" class="tlist"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button class="btn" id="tCancel">Cancel</button><button class="btn green" id="tGo" hidden>Start now</button></div></div>`;
+  m.classList.add('on');
+  m.querySelector('#tCancel').onclick = () => { tourLobbyCancel(); m.classList.remove('on'); };
+  try {
+    const slot = await TR.drv.get('matchmaking/tour');
+    if (slot && Date.now() - slot.at < LOBBY_WAIT * 1000) {   // join an open lobby
+      TR.id = slot.tid;
+      const r = await TR.drv.txn(tp('count'), v => (v && v < TOUR_N ? v + 1 : undefined));
+      const meta = r.committed ? await TR.drv.get(tp('meta')) : null;
+      if (r.committed && meta && meta.state === 'lobby') {
+        TR.host = false;
+        await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
+        return lobbyWatch(false);
+      }
+    }
+    TR.id = Net.newCode(6); TR.host = true;                        // open a new lobby
+    await TR.drv.set(tp('meta'), { state: 'lobby', host: TR.me, seed: (Math.random() * 2 ** 31) | 0, created: Date.now(), beat: Date.now() });
+    await TR.drv.set(tp('count'), 1);
+    await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
+    await TR.drv.set('matchmaking/tour', { tid: TR.id, at: Date.now() });
+    TR.drv.onDisconnectRemove('matchmaking/tour');
+    lobbyWatch(true);
+  } catch (e) { console.error(e); m.classList.remove('on'); toast('Could not reach the server, playing with bots'); Net.mode === 'off' || startTournamentOffline(); }
+}
+async function startTournamentOffline() { const keep = Net.ready; Net.ready = false; try { await startTournament(); } finally { Net.ready = keep; } }
+function lobbyWatch(isHost) {
+  const m = $('#deckModal'); let left = LOBBY_WAIT;
+  TR.unsub.push(TR.drv.on(tp('players'), ps => {
+    TR.players = ps || {};
+    const L = $('#tList'); if (L) L.innerHTML = Array.from({ length: TOUR_N }, (_, i) => { const e = Object.entries(TR.players)[i];
+      return `<div class="tseat ${e ? '' : 'empty'}">${e ? (e[1].name || 'Player').replace(/</g, '') + (e[0] === TR.me ? ' (you)' : '') : 'Empty seat · a bot will join'}</div>`; }).join('');
+    if (isHost && Object.keys(TR.players).length >= TOUR_N) hostBegin();
+  }));
+  if (isHost) {
+    const go = $('#tGo'); if (go) { go.hidden = false; go.onclick = () => hostBegin(); }
+    TR.timer = setInterval(() => { left--; const w = $('#tWait'); if (w) w.textContent = `Starting in ${left}s…`; if (left <= 0) hostBegin(); }, 1000);
+  } else {
+    const w = $('#tWait'); if (w) w.textContent = 'Waiting for the host to start…';
+  }
+  TR.unsub.push(TR.drv.on(tp('meta'), meta => { if (meta && meta.state === 'running' && !TR.joined) { TR.joined = true; m.classList.remove('on'); clientStart(); } }));
+}
+async function tourLobbyCancel() {
+  trCleanup();
+  if (!TR.id || !TR.drv) return;
+  if (TR.host) { await TR.drv.txn('matchmaking/tour', v => (v && v.tid === TR.id ? null : undefined)); await TR.drv.remove(`tours/${TR.id}`); }
+  else { await TR.drv.remove(tp(`players/${TR.me}`)); await TR.drv.txn(tp('count'), v => (v ? v - 1 : undefined)); }
+}
+
+/* ---------- host: seats bots, runs rounds */
+async function hostBegin() {
+  if (TR.hostEngine) return;
+  clearInterval(TR.timer);
+  const H = TR.hostEngine = { bots: {}, last: {}, prevPairs: {} };
+  if (TR.drv !== Net.drv || !Net.online()) {} else { await TR.drv.txn('matchmaking/tour', v => (v && v.tid === TR.id ? null : undefined)); }
+  const ps = (await TR.drv.get(tp('players'))) || {};
+  const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
+  for (let i = Object.keys(ps).length, k = 0; i < TOUR_N; i++, k++) {
+    const pid = 'BOT' + (k + 1), sd = makeBotSide();
+    H.bots[pid] = sd; ps[pid] = { name: names[k], bot: true, hearts: HEARTS };
+  }
+  await TR.drv.set(tp('players'), ps);
+  H.beat = setInterval(() => TR.drv.update(tp('meta'), { beat: Date.now() }), 5000);
+  hostRound(1);
+  if (!TR.joined) { TR.joined = true; $('#deckModal').classList.remove('on'); clientStart(); }
+}
+function makeBotSide() {
+  const shuffle = arr => arr.map(v => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map(v => v[1]);
+  const heroes = HEROES.filter(available), hero = heroes[Math.floor(Math.random() * heroes.length)];
+  const sd = { side: 1, levels: enemyLevels(), hero, deck: shuffle(MINIS.filter(available)).slice(0, DECK_SIZE), energy: ENERGY.start, owned: {}, offers: [] };
+  sd.owned[hero] = { tile: HERO_TILE.slice(), perks: [], spent: 0 };
+  return sd;
+}
+async function hostRound(r) {
+  const H = TR.hostEngine; if (!H) return;
+  const ps = (await TR.drv.get(tp('players'))) || {};
+  const alive = Object.keys(ps).filter(p => ps[p].hearts > 0);
+  if (alive.length <= 1) return hostFinish(ps);
+  for (const pid of alive) if (H.bots[pid]) {           // bots shop for this round
+    const sd = H.bots[pid]; rollOffers(sd, true); botTurnFor(sd, true);
+    await TR.drv.set(tp(`army/${r}/${pid}`), { owned: sd.owned, levels: sd.levels });
+  }
+  let order, tries = 0;                                  // pair everyone, avoiding last round's opponent if possible
+  do { order = alive.slice().sort(() => Math.random() - 0.5); tries++; }
+  while (tries < 12 && order.some((p, i) => i % 2 === 0 && order[i + 1] && H.prevPairs[p] === order[i + 1]));
+  const pairs = [];
+  for (let i = 0; i < order.length; i += 2) {
+    if (order[i + 1]) { pairs.push([order[i], order[i + 1]]); H.prevPairs[order[i]] = order[i + 1]; H.prevPairs[order[i + 1]] = order[i]; }
+    else { const others = alive.filter(p => p !== order[i]); pairs.push([order[i], 'GHOST', others[Math.floor(Math.random() * others.length)]]); }
+  }
+  H.round = r; H.pairs = pairs; H.done = false;
+  await TR.drv.set(tp(`pairs/${r}`), pairs);
+  await TR.drv.update(tp('meta'), { state: 'running', round: r, deadline: Date.now() + (TOUR_DEPLOY + 70) * 1000 });
+  H.offA && H.offA(); H.offR && H.offR();
+  H.offA = TR.drv.on(tp(`army/${r}`), armies => hostArmies(r, armies || {}, ps));
+  H.offR = TR.drv.on(tp(`result/${r}`), res => hostResults(r, res || {}, ps));
+  clearInterval(H.watch);
+  H.watch = setInterval(() => hostTimeout(r, ps), 3000);
+}
+const tourSeed = (r, k) => ((TR.seed || 1) + r * 7919 + k * 104729) | 0;
+function pairArmies(pair, armies, ps) {
+  const [a, b, g] = pair, src = b === 'GHOST' ? g : b;
+  const A0 = armies[a] || TR.hostEngine.last[a], A1 = armies[src] || TR.hostEngine.last[src];
+  return A0 && A1 ? [cleanArmy(A0), mirrorArmy(cleanArmy(A1))] : null;
+}
+function hostArmies(r, armies, ps) {
+  const H = TR.hostEngine; if (!H || H.round !== r) return;
+  for (const [pid, a] of Object.entries(armies)) H.last[pid] = a;
+  H.pairs.forEach((pair, k) => {                      // bot-only fights are played here, out of sight
+    const [a, b] = pair, botA = ps[a] && ps[a].bot, botB = b === 'GHOST' || (ps[b] && ps[b].bot);
+    if (!botA || !botB || H['ran' + r + '_' + k]) return;
+    const arm = pairArmies(pair, armies, ps); if (!arm) return;
+    if (B.on && B.phase === 'fight' && !B.headless) return;   // never in the middle of the host's own fight; retried by the watcher
+    H['ran' + r + '_' + k] = true;
+    const w = simHeadless(arm[0], arm[1], tourSeed(r, k));
+    TR.drv.update(tp(`result/${r}`), b === 'GHOST' ? { [a]: w === 0 ? 'W' : 'L' } : { [a]: w === 0 ? 'W' : 'L', [b]: w === 1 ? 'W' : 'L' });
+  });
+}
+function hostResults(r, res, ps) {
+  const H = TR.hostEngine; if (!H || H.round !== r || H.done) return;
+  const fill = {};                                     // a human's result decides their bot opponent's result
+  for (const [a, b] of H.pairs) {
+    if (b === 'GHOST') continue;
+    if (res[a] && !res[b] && ps[b] && ps[b].bot) fill[b] = res[a] === 'W' ? 'L' : 'W';
+    if (res[b] && !res[a] && ps[a] && ps[a].bot) fill[a] = res[b] === 'W' ? 'L' : 'W';
+  }
+  if (Object.keys(fill).length) return TR.drv.update(tp(`result/${r}`), fill);
+  const need = H.pairs.flatMap(([a, b]) => (b === 'GHOST' ? [a] : [a, b]));
+  if (need.every(p => res[p])) { H.done = true; clearInterval(H.watch); setTimeout(() => hostApply(r, res, ps), 2600); }
+}
+async function hostTimeout(r, ps) {
+  const H = TR.hostEngine; if (!H || H.round !== r || H.done) return;
+  const armies = (await TR.drv.get(tp(`army/${r}`))) || {};
+  hostArmies(r, armies, ps);                           // retry background fights that were waiting for the host's own fight
+  const meta = await TR.drv.get(tp('meta')); if (!meta || Date.now() < meta.deadline) return;
+  const res = (await TR.drv.get(tp(`result/${r}`))) || {}, fill = {};   // someone vanished: play their pair here with what we have
+  H.pairs.forEach((pair, k) => {
+    const [a, b] = pair; if (res[a] && (b === 'GHOST' || res[b])) return;
+    const hero = p => ({ owned: { [S.deck.hero]: { tile: HERO_TILE.slice(), perks: [], spent: 0 } }, levels: {} });
+    const A0 = cleanArmy(armies[a] || H.last[a] || hero(a)), src = b === 'GHOST' ? pair[2] : b, A1 = mirrorArmy(cleanArmy(armies[src] || H.last[src] || hero(src)));
+    const w = simHeadless(A0, A1, tourSeed(r, k));
+    if (!res[a]) fill[a] = w === 0 ? 'W' : 'L';
+    if (b !== 'GHOST' && !res[b]) fill[b] = w === 1 ? 'W' : 'L';
+  });
+  if (Object.keys(fill).length) TR.drv.update(tp(`result/${r}`), fill);
+}
+async function hostApply(r, res, ps0) {
+  const H = TR.hostEngine; if (!H) return;
+  const ps = (await TR.drv.get(tp('players'))) || ps0;
+  const aliveBefore = Object.keys(ps).filter(p => ps[p].hearts > 0).length;
+  const out = [];
+  for (const [pid, v] of Object.entries(res)) {
+    if (!ps[pid] || ps[pid].hearts <= 0) continue;
+    if (v === 'L') { ps[pid].hearts--; if (ps[pid].hearts <= 0) out.push(pid); }
+    if (H.bots[pid]) H.bots[pid].energy += v === 'W' ? ENERGY.win : ENERGY.loss;
+  }
+  out.sort(() => Math.random() - 0.5).forEach((pid, i) => { ps[pid].place = aliveBefore - i; });
+  await TR.drv.set(tp('players'), ps);
+  const alive = Object.keys(ps).filter(p => ps[p].hearts > 0);
+  if (alive.length <= 1) return hostFinish(ps);
+  // nobody human left in the running: no one is watching, so stop here
+  if (!alive.some(p => !ps[p].bot)) return hostFinish(ps, true);
+  hostRound(r + 1);
+}
+async function hostFinish(ps, early) {
+  const H = TR.hostEngine; if (!H) return;
+  const alive = Object.keys(ps).filter(p => ps[p].hearts > 0);
+  if (alive.length === 1) ps[alive[0]].place = 1;
+  else alive.sort((a, b) => ps[b].hearts - ps[a].hearts).forEach((p, i) => { ps[p].place = i + 1; });
+  await TR.drv.set(tp('players'), ps);
+  await TR.drv.update(tp('meta'), { state: 'over' });
+  clearInterval(H.watch); clearInterval(H.beat); H.offA && H.offA(); H.offR && H.offR();
+  TR.hostEngine = null;
+}
+
+/* ---------- every player (the host too): deploy, fight your pairing, report */
+async function clientStart() {
+  const meta = await TR.drv.get(tp('meta')); TR.seed = meta.seed;
+  startBattle('tour');
+  B.onRoundEnd = tourRoundEnd; B.oppName = '…';
+  TR.unsub.push(TR.drv.on(tp('players'), ps => { TR.players = ps || {}; const me = TR.players[TR.me];
+    if (me && me.place && !TR.out) tourOut(me.place);
+    if (B.on && B.mode === 'tour') refreshTourHud(); }));
+  TR.unsub.push(TR.drv.on(tp('meta'), m => {
+    if (!m || TR.out) return;
+    if (m.state === 'over') { const me = TR.players[TR.me]; return tourOut((me && me.place) || 1); }
+    if (m.round && m.round !== TR.round) clientRound(m.round);
+  }));
+  TR.timer = setInterval(async () => {                 // the host vanished?
+    if (TR.host || TR.out) return;
+    const m = await TR.drv.get(tp('meta')); if (m && m.state === 'running' && Date.now() - (m.beat || 0) > 30000) { toast('The host left, so the tournament ended'); tourOut(placeNow()); }
+  }, 10000);
+}
+const placeNow = () => 1 + Object.entries(TR.players).filter(([p, v]) => p !== TR.me && v.hearts > (TR.players[TR.me] || {}).hearts).length;
+async function clientRound(r) {
+  if (TR.out) return;
+  const pairs = await TR.drv.get(tp(`pairs/${r}`)); if (!pairs) return;
+  TR.round = r; TR.sent = false; TR.left = TOUR_DEPLOY; B.waitNext = false;
+  const k = pairs.findIndex(p => p[0] === TR.me || p[1] === TR.me);
+  if (k < 0) return;                                  // already out
+  const pair = pairs[k]; TR.pairIdx = k; TR.pair = pair;
+  TR.mySide = pair[0] === TR.me ? 0 : 1;
+  TR.oppId = pair[1] === 'GHOST' ? pair[2] : (TR.mySide === 0 ? pair[1] : pair[0]);
+  const opp = TR.players[TR.oppId] || {};
+  B.oppName = (opp.name || 'Opponent') + (pair[1] === 'GHOST' ? ' (copy)' : '');
+  B.meSide = TR.mySide; B.round = r;
+  if (r > 1) setupRound(false); else renderBattle();
+  banner(`vs ${B.oppName}`, 1500);
+  clearInterval(TR.dtimer);
+  TR.dtimer = setInterval(() => {
+    if (B.phase !== 'deploy' || TR.sent) return;
+    TR.left--; const t = $('#olTimer'); if (t) t.textContent = TR.left + 's';
+    if (TR.left <= 0) tourSubmit();
+  }, 1000);
+}
+function tourSubmit() {
+  if (TR.sent || B.phase !== 'deploy') return;
+  TR.sent = true; clearInterval(TR.dtimer);
+  const me = B.side[0], owned = {}, levels = {};
+  for (const [id, o] of Object.entries(me.owned)) { owned[id] = { tile: o.tile.slice(), perks: o.perks.slice(), spent: o.spent || 0 }; levels[id] = me.levels[id] || 1; }
+  const r = TR.round;
+  TR.drv.set(tp(`army/${r}/${TR.me}`), { owned, levels });
+  renderBattle();
+  const off = TR.drv.on(tp(`army/${r}/${TR.oppId}`), opp => {
+    if (!opp || TR.round !== r || B.phase !== 'deploy') return;
+    off();
+    const mine = { owned, levels }, theirs = cleanArmy(opp);
+    // shared board: the first player of the pair is side 0, the second's army is mirrored
+    B.armies = TR.mySide === 0 ? [mine, mirrorArmy(theirs)] : [theirs, mirrorArmy(mine)];
+    if (TR.pair[1] === 'GHOST') B.armies = [mine, mirrorArmy(theirs)];
+    if (TR.pair[1] === 'GHOST') B.meSide = 0;
+    fight(tourSeed(r, TR.pairIdx));
+  });
+  TR.unsub.push(off);
+}
+function tourRoundEnd(winCanon) {
+  const won = winCanon === B.meSide, r = TR.round;
+  TR.drv.update(tp(`result/${r}`), { [TR.me]: won ? 'W' : 'L' });
+  B.phase = 'roundEnd';
+  const me = B.side[0];
+  me.energy += (won ? ENERGY.win : ENERGY.loss) + (me.stolen || 0); me.stolen = 0;
+  for (const u of B.units) if (u.alive && u.side === winCanon) { u.busy = true; u.moving = false; u.a.pos = TILE(u.c, u.r); u.a.yaw = winCanon === 0 ? 0 : Math.PI; u.a.play('win'); }
+  renderBattle();
+  const hearts = (TR.players[TR.me] || {}).hearts || 0;
+  banner(won ? 'Round won!' : hearts > 1 ? 'Round lost · −1 heart' : 'Round lost', 1800, won ? '#FFC83D' : '#FF8FB8');
+  setTimeout(() => { if (B.on && B.mode === 'tour' && B.phase === 'roundEnd' && !TR.out) { B.waitNext = true; renderBattle(); } }, 2500);
+  return false;
+}
+
+/* ---------- HUD, standings, the end */
+function tourHud() {
+  const ps = TR.players, me = ps[TR.me] || { hearts: HEARTS }, alive = Object.values(ps).filter(p => p.hearts > 0).length;
+  const hearts = Array.from({ length: HEARTS }, (_, i) => `<i class="heart ${i < me.hearts ? 'on' : ''}">${pix('heart', 16)}</i>`).join('');
+  return `<div class="hud tourhud"><div class="hearts" aria-label="${me.hearts} hearts left">${hearts}</div>
+    <div class="tag disp">Round ${TR.round || 1}<small class="vs">vs ${(B.oppName || '').replace(/</g, '')}</small></div>
+    <button class="btn" id="standBtn" style="min-height:34px;font-size:16px;margin:0">${alive}/${TOUR_N} left</button></div>
+    ${B.waitNext ? `<div class="waitnext">Waiting for the other fights to finish…</div>` : ''}`;
+}
+function refreshTourHud() { const h = document.querySelector('#battle .hud'); if (!h) return; const t = document.createElement('div'); t.innerHTML = tourHud(); h.replaceWith(t.firstElementChild); const sb = $('#standBtn'); if (sb) sb.onclick = showStandings; }
+function standingsHTML() {
+  const rows = Object.entries(TR.players).sort((a, b) => (b[1].hearts - a[1].hearts) || ((a[1].place || 99) - (b[1].place || 99)));
+  return rows.map(([pid, p]) => `<div class="trow ${pid === TR.me ? 'me' : ''} ${p.hearts > 0 ? '' : 'out'}"><b>${(p.name || 'Player').replace(/</g, '')}${p.bot ? ' <small>bot</small>' : ''}</b>
+    <span class="hs">${p.hearts > 0 ? Array.from({ length: HEARTS }, (_, i) => `<i class="heart ${i < p.hearts ? 'on' : ''}">${pix('heart', 13)}</i>`).join('') : `#${p.place}`}</span></div>`).join('');
+}
+function showStandings() {
+  const m = $('#deckModal');
+  m.innerHTML = `<div class="card olbox" role="dialog" aria-label="Standings"><div style="display:flex;justify-content:space-between;align-items:center"><h2 class="title disp" style="font-size:26px">Standings</h2>
+    <button class="btn" id="stClose" style="min-height:38px">Close</button></div><div class="tlist">${standingsHTML()}</div></div>`;
+  m.classList.add('on'); m.querySelector('#stClose').onclick = () => m.classList.remove('on');
+}
+const TOUR_TROPHIES = [40, 30, 20, 10, 0, -5, -10, -15];
+function tourOut(place) {
+  if (TR.out) return; TR.out = true; TR.place = place;
+  clearInterval(TR.dtimer);
+  const stillRunning = TR.host && TR.hostEngine && Object.values(TR.players).some(p => !p.bot && p.hearts > 0);
+  const ai = arenaIdx(), dT = TOUR_TROPHIES[place - 1] || 0, coins = Math.round((160 - (place - 1) * 18) * (1 + 0.5 * ai)), tokens = Math.max(2, 14 - place * 2 + 3 * ai);
+  let drop = null;
+  if (place <= 4 && dropsLeft() > 0) { drop = rollReward(rollTable(DROP_TABLE), 'drop'); S.drops.n++; }
+  const wasArena = curArena();
+  S.trophies = Math.max(0, S.trophies + dT); fixDeck(); S.coins += coins; S.tokens += tokens; if (place === 1) S.wins++; else S.losses++; save();
+  if (curArena() !== wasArena && dT > 0) setTimeout(() => toast(`New arena: ${ARENAS[curArena()][1]}!`), 600);
+  B.phase = 'over';
+  const r = $('#result'); if (!r) return;
+  r.innerHTML = `<div class="disp" style="font-size:56px;color:${place === 1 ? '#FFC83D' : place <= 4 ? '#7CF08A' : '#FF8FB8'}">${place === 1 ? 'Champion!' : '#' + place}</div>
+    <div class="sub">${place === 1 ? 'Last one standing!' : `You finished ${place}${['st', 'nd', 'rd'][place - 1] || 'th'} of ${TOUR_N}`}</div>
+    <div class="rewards"><div class="pill">${IC.trophy}${dT > 0 ? '+' : ''}${dT}</div><div class="pill">${IC.coin}+${coins}</div><div class="pill">${IC.token}+${tokens}</div></div>
+    ${drop ? `<div class="dropbox"><div class="sub">Daily drop ${S.drops.n}/${DROPS_PER_DAY}</div><button class="dropball" id="dropBall" aria-label="Open your daily drop">${ballImg(drop.kind, 84)}<small>Tap to open</small></button></div>` : ''}
+    <div class="tlist small">${standingsHTML()}</div>
+    ${stillRunning ? '<div class="sub" style="max-width:300px;text-align:center">You’re hosting: keep this tab open until the others finish.</div>' : ''}
+    <button class="btn green disp" id="homeBtn" style="font-size:22px;min-width:200px">Continue</button>`;
+  r.classList.add('on');
+  let opened = !drop;
+  const openDrop = () => { if (opened) return; opened = true; grantReward(drop); save(); const box = r.querySelector('.dropbox'); box.classList.add('opening');
+    setTimeout(() => { box.innerHTML = `<div class="sub">Daily drop ${S.drops.n}/${DROPS_PER_DAY}</div>${rewardHTML(drop, true)}`; box.classList.remove('opening'); }, 450); };
+  if (drop) r.querySelector('#dropBall').onclick = openDrop;
+  r.querySelector('#homeBtn').onclick = () => { if (!opened) openDrop(); if (!TR.hostEngine) trCleanup(); B.on = false; go('play'); };
+}
+function tourLeave() {
+  if (TR.round) TR.drv.update(tp(`result/${TR.round}`), { [TR.me]: 'L' });
+  TR.drv.update(tp(`players/${TR.me}`), { hearts: 0, place: Object.values(TR.players).filter(p => p.hearts > 0).length });
+  toast('You left the tournament');
+  if (!TR.hostEngine) trCleanup();
+  B.on = false; go('play');
 }
 </script>
 </body>
