@@ -745,10 +745,10 @@ const Net = {
     try {
       if (local) this.drv = LocalDriver();
       else if (cfg.firebase && cfg.firebase.apiKey && !/PASTE/.test(cfg.firebase.apiKey)) this.drv = await FirebaseDriver(cfg.firebase);
-      else return this.offline();
+      else return this.offline(cfg.firebase ? 'config.js still has the placeholder apiKey' : null);
       this.mode = local ? 'local' : 'firebase';
-      this.uid = await this.drv.signIn();
-      let me = await this.drv.get(`players/${this.uid}`);
+      try { this.uid = await this.drv.signIn(); } catch (e) { throw new Error('sign-in failed (turn on Anonymous sign-in and add this site under Authorized domains): ' + (e.code || e.message)); }
+      let me; try { me = await this.drv.get(`players/${this.uid}`); } catch (e) { throw new Error('database refused access (publish database.rules.json in Realtime Database > Rules): ' + (e.code || e.message)); }
       if (!me || !me.code) {                                   // first visit: claim a free 8-character ID
         for (let tries = 0; tries < 20 && !this.code; tries++) {
           const c = this.newCode(), r = await this.drv.txn(`codes/${c}`, v => (v ? undefined : this.uid));
@@ -1591,7 +1591,7 @@ function openProfile() {
       <div class="idcard"><div><span class="sub">Player ID</span><b class="disp" id="myId">${Net.code || '--------'}</b></div>
         <span class="rolebadge r-${Net.role}">${Net.role === 'owner' ? 'Owner' : Net.role === 'admin' ? 'Admin' : 'Player'}</span>
         <button class="btn" id="copyId" style="min-height:36px;font-size:16px">Copy</button></div>
-      <div class="sub" style="text-align:center">${Net.mode === 'firebase' ? 'Online \u00b7 your progress is saved with this ID' : Net.mode === 'local' ? 'Local test network (this browser only)' : 'Offline \u00b7 progress is saved in this browser only'}</div>
+      <div class="sub" style="text-align:center">${Net.mode === 'firebase' ? 'Online \u00b7 your progress is saved with this ID' : Net.mode === 'local' ? 'Local test network (this browser only)' : (window.GAME_CONFIG && Net.why ? 'Offline \u00b7 could not connect: ' + String(Net.why).replace(/</g, '') : 'Offline \u00b7 progress is saved in this browser only')}</div>
       ${Net.role === 'owner' ? `<div class="sub">Owner \u00b7 admins</div><div class="ownerbox">
         <input id="admCode" maxlength="8" placeholder="PLAYER ID" autocomplete="off" aria-label="Player ID" style="width:100%;min-width:0;text-transform:uppercase;letter-spacing:3px;font:400 24px 'VT323',monospace;text-align:center">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><button class="btn green" id="admAdd" style="min-height:40px;font-size:17px">Make admin</button><button class="btn" id="admDel" style="min-height:40px;font-size:17px">Remove admin</button></div>
@@ -2601,7 +2601,7 @@ const mirrorTile = t => [4 - t[0], 7 - t[1]];
 function olCleanup() { OL.unsub.forEach(f => { try { f(); } catch (e) {} }); OL.unsub = []; clearInterval(OL.timer); OL.timer = 0; }
 function needOnline() {
   if (Net.online()) return true;
-  toast(Net.mode === 'off' ? 'Online play needs the Firebase setup (see README)' : 'Not connected'); return false;
+  toast(Net.mode === 'off' ? (window.GAME_CONFIG && Net.why ? 'Offline: ' + Net.why : 'Online play needs the Firebase setup (see README)') : 'Not connected'); return false;
 }
 
 /* ---------- friendly rooms */
