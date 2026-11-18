@@ -13,5 +13,5 @@ window.GAME_CONFIG = {
     appId: "1:1055184731045:web:bc148dcaa6d9ccc3f1464c",
     measurementId: "G-2KEDXJY9JT"
   },
-  ownerCode: "QXDPVHMZ"
+  ownerCode: "D4V8VVU3"
 };
