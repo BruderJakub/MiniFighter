@@ -2913,7 +2913,16 @@ async function startTournament() {
       return lobbyWatch(true);
     }
     throw new Error('matchmaking busy');
-  } catch (e) { console.error(e); m.classList.remove('on'); toast('Could not reach the server, playing with bots'); Net.mode === 'off' || startTournamentOffline(); }
+  } catch (e) {   // say exactly why instead of quietly playing bots
+    console.error(e);
+    const denied = /permission/i.test((e && (e.code || e.message)) || '');
+    m.innerHTML = `<div class="card olbox" role="alertdialog" aria-label="Tournament problem"><h2 class="title disp" style="font-size:26px">Can\u2019t open a tournament</h2>
+      <p class="sub" style="color:#FFB3CF">${denied ? 'The database refused access to tournaments. In Firebase \u2192 Realtime Database \u2192 Rules, the rules need the "tours" section from the latest database.rules.json, then Publish.' : 'Could not reach the server: ' + String((e && (e.code || e.message)) || e).replace(/</g, '')}</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button class="btn" id="tErrClose">Close</button><button class="btn green" id="tErrBots">Play with bots</button></div></div>`;
+    m.classList.add('on');
+    m.querySelector('#tErrClose').onclick = () => m.classList.remove('on');
+    m.querySelector('#tErrBots').onclick = () => { m.classList.remove('on'); startTournamentOffline(); };
+  }
 }
 async function tryJoinLobby(tid) {
   const meta = await TR.drv.get(`tours/${tid}/meta`);
