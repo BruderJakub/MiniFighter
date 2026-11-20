@@ -812,7 +812,9 @@ async function FirebaseDriver(conf) {
   for (const m of ['app', 'auth', 'database']) await load(`https://www.gstatic.com/firebasejs/${V}/firebase-${m}-compat.js`);
   firebase.initializeApp(conf);
   const db = firebase.database(), R = p => db.ref(p);
+  let offset = 0; R('.info/serverTimeOffset').on('value', s => { offset = s.val() || 0; });   // everyone shares the server's clock
   return {
+    now: () => Date.now() + offset,
     async signIn() { const c = await firebase.auth().signInAnonymously(); return c.user.uid; },
     get: async p => (await R(p).once('value')).val(),
     set: (p, v) => R(p).set(v), update: (p, v) => R(p).update(v), remove: p => R(p).remove(),
@@ -836,6 +838,7 @@ function MemoryDriver() {
     notify();
   };
   return {
+    now: () => Date.now(),
     async signIn() { return 'me'; }, get: async p => JSON.parse(JSON.stringify(read(p))), set: async (p, v) => write(p, v),
     update: async (p, obj) => { for (const [k, v] of Object.entries(obj)) write(p + '/' + k, v); }, remove: async p => write(p, null),
     on(p, cb) { const s = { p, cb, last: JSON.stringify(read(p)) }; subs.push(s); setTimeout(() => cb(JSON.parse(s.last)), 0); return () => { const i = subs.indexOf(s); if (i >= 0) subs.splice(i, 1); }; },
@@ -850,6 +853,7 @@ function LocalDriver() {
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { return {}; } };
   const parts = p => p.split('/').filter(Boolean);
   const read = (tree, p) => parts(p).reduce((o, k) => (o == null ? null : o[k] === undefined ? null : o[k]), tree);
+  const lock = fn => (navigator.locks ? navigator.locks.request('pc_localnet', fn) : Promise.resolve(fn()));
   const write = (p, v) => {
     const tree = load(), ks = parts(p); let o = tree;
     for (let i = 0; i < ks.length - 1; i++) { if (typeof o[ks[i]] !== 'object' || o[ks[i]] === null) o[ks[i]] = {}; o = o[ks[i]]; }
@@ -862,13 +866,17 @@ function LocalDriver() {
   window.addEventListener('pagehide', () => gone.forEach(p => write(p, null)));
   let uid = sessionStorage.getItem('pc_local_uid'); if (!uid) { uid = 'L' + Math.random().toString(36).slice(2, 12); sessionStorage.setItem('pc_local_uid', uid); }
   return {
+    now: () => Date.now(),
     async signIn() { return uid; },
     get: async p => read(load(), p),
-    set: async (p, v) => write(p, v),
-    update: async (p, obj) => { for (const [k, v] of Object.entries(obj)) write(p + '/' + k, v); },
-    remove: async p => write(p, null),
+    set: (p, v) => lock(() => write(p, v)),                       // every change holds the lock, so tabs never overwrite each other
+    update: (p, obj) => lock(() => { for (const [k, v] of Object.entries(obj)) write(p + '/' + k, v); }),
+    remove: p => lock(() => write(p, null)),
     on(p, cb) { const s = { p, cb, last: JSON.stringify(read(load(), p)) }; subs.push(s); setTimeout(() => cb(JSON.parse(s.last)), 0); return () => subs.splice(subs.indexOf(s), 1); },
-    async txn(p, fn) { const cur = read(load(), p), n = fn(cur); if (n === undefined) return { committed: false, val: cur }; write(p, n); return { committed: true, val: n }; },
+    async txn(p, fn) {   // atomic across tabs, like a real Firebase transaction
+      const run = () => { const cur = read(load(), p), nv = fn(cur); if (nv === undefined) return { committed: false, val: cur }; write(p, nv); return { committed: true, val: nv }; };
+      return lock(run);
+    },
     onDisconnectRemove: p => gone.push(p),
     cancelDisconnect: p => { const i = gone.indexOf(p); if (i >= 0) gone.splice(i, 1); },
   };
@@ -2755,14 +2763,14 @@ async function findRanked() {
   m.classList.add('on');
   m.querySelector('#olCancel').onclick = () => { cancelWaiting(); m.classList.remove('on'); };
   try {
-    const now = Date.now();
+    const now = Net.drv.now();
     const slot = await Net.drv.get('matchmaking/slot');
     if (slot && slot.code !== Net.code && now - slot.at < RANKED_WAIT * 1000) {
       const took = await Net.drv.txn('matchmaking/slot', v => (v && v.room === slot.room ? null : undefined));
       if (took.committed) { const room = await joinRoom(slot.room); m.classList.remove('on'); return startOnline(slot.room, 1, room.host, 'ranked'); }
     }
     const R = await createRoom('ranked'); OL.waiting = R;
-    const put = await Net.drv.txn('matchmaking/slot', v => (v && v.code !== Net.code && Date.now() - v.at < RANKED_WAIT * 1000 ? undefined : { room: R, code: Net.code, at: Date.now() }));
+    const put = await Net.drv.txn('matchmaking/slot', v => (v && v.code !== Net.code && Net.drv.now() - v.at < RANKED_WAIT * 1000 ? undefined : { room: R, code: Net.code, at: Net.drv.now() }));
     if (!put.committed) { cancelWaiting(); m.classList.remove('on'); return findRanked(); }   // someone slipped in first: try again
     OL.mySlot = true;
     Net.drv.onDisconnectRemove('matchmaking/slot');
@@ -2867,7 +2875,7 @@ function trCleanup() { TR.unsub.forEach(f => { try { f(); } catch (e) {} }); TR.
 /* ---------- joining */
 async function startTournament() {
   trCleanup();
-  Object.assign(TR, { round: 0, players: {}, sent: false, out: false, place: null, hostEngine: null, joined: false });
+  Object.assign(TR, { round: 0, players: {}, sent: false, out: false, place: null, hostEngine: null, joined: false, cancelled: false, id: null });
   if (!Net.online()) {                       // offline: you and 7 bots
     TR.drv = MemoryDriver(); TR.id = 'LOCAL'; TR.me = Net.code || 'YOU'; TR.host = true;
     await TR.drv.set(tp('meta'), { state: 'lobby', host: TR.me, seed: (Math.random() * 2 ** 31) | 0, created: Date.now() });
@@ -2883,25 +2891,40 @@ async function startTournament() {
   m.classList.add('on');
   m.querySelector('#tCancel').onclick = () => { tourLobbyCancel(); m.classList.remove('on'); };
   try {
-    const slot = await TR.drv.get('matchmaking/tour');
-    if (slot && Date.now() - slot.at < LOBBY_WAIT * 1000) {   // join an open lobby
-      TR.id = slot.tid;
-      const r = await TR.drv.txn(tp('count'), v => (v && v < TOUR_N ? v + 1 : undefined));
-      const meta = r.committed ? await TR.drv.get(tp('meta')) : null;
-      if (r.committed && meta && meta.state === 'lobby') {
-        TR.host = false;
-        await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
-        return lobbyWatch(false);
+    // Everyone searching ends up in the same lobby: join the open one if there is one, otherwise open a lobby
+    // and claim the shared slot with a transaction. If someone else claimed it first, drop ours and join theirs.
+    const slotOk = s => s && s.tid && TR.drv.now() - s.at < (LOBBY_WAIT + 8) * 1000;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (TR.cancelled) return;
+      const slot = await TR.drv.get('matchmaking/tour');
+      if (slotOk(slot) && slot.tid !== TR.id) {
+        if (await tryJoinLobby(slot.tid)) return lobbyWatch(false);
+        await TR.drv.txn('matchmaking/tour', v => (v && v.tid === slot.tid ? null : undefined));   // full or already started: clear it
+        continue;
       }
+      const tid = Net.newCode(6);
+      await TR.drv.set(`tours/${tid}/meta`, { state: 'lobby', host: TR.me, seed: (Math.random() * 2 ** 31) | 0, created: Date.now(), beat: Date.now() });
+      await TR.drv.set(`tours/${tid}/count`, 1);
+      await TR.drv.set(`tours/${tid}/players/${TR.me}`, { name: S.name, bot: false, hearts: HEARTS });
+      const claim = await TR.drv.txn('matchmaking/tour', v => (slotOk(v) && v.tid !== tid ? undefined : { tid, at: TR.drv.now() }));
+      if (!claim.committed) { await TR.drv.remove(`tours/${tid}`); await new Promise(r => setTimeout(r, 150 + Math.random() * 300)); continue; }
+      TR.id = tid; TR.host = true;
+      TR.drv.onDisconnectRemove('matchmaking/tour');
+      return lobbyWatch(true);
     }
-    TR.id = Net.newCode(6); TR.host = true;                        // open a new lobby
-    await TR.drv.set(tp('meta'), { state: 'lobby', host: TR.me, seed: (Math.random() * 2 ** 31) | 0, created: Date.now(), beat: Date.now() });
-    await TR.drv.set(tp('count'), 1);
-    await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
-    await TR.drv.set('matchmaking/tour', { tid: TR.id, at: Date.now() });
-    TR.drv.onDisconnectRemove('matchmaking/tour');
-    lobbyWatch(true);
+    throw new Error('matchmaking busy');
   } catch (e) { console.error(e); m.classList.remove('on'); toast('Could not reach the server, playing with bots'); Net.mode === 'off' || startTournamentOffline(); }
+}
+async function tryJoinLobby(tid) {
+  const meta = await TR.drv.get(`tours/${tid}/meta`);
+  if (!meta || meta.state !== 'lobby') return false;
+  TR.id = tid;
+  const r = await TR.drv.txn(tp('count'), v => (v && v < TOUR_N ? v + 1 : undefined));
+  if (!r.committed) return false;
+  await TR.drv.set(tp(`players/${TR.me}`), { name: S.name, bot: false, hearts: HEARTS });
+  const again = await TR.drv.get(tp('meta'));          // the host may have started in that same moment
+  if (!again || again.state !== 'lobby') { await TR.drv.remove(tp(`players/${TR.me}`)); return false; }
+  TR.host = false; return true;
 }
 async function startTournamentOffline() { const keep = Net.ready; Net.ready = false; try { await startTournament(); } finally { Net.ready = keep; } }
 function lobbyWatch(isHost) {
@@ -2914,14 +2937,18 @@ function lobbyWatch(isHost) {
   }));
   if (isHost) {
     const go = $('#tGo'); if (go) { go.hidden = false; go.onclick = () => hostBegin(); }
-    TR.timer = setInterval(() => { left--; const w = $('#tWait'); if (w) w.textContent = `Starting in ${left}s…`; if (left <= 0) hostBegin(); }, 1000);
+    TR.timer = setInterval(() => { left--; const w = $('#tWait'); if (w) w.textContent = `Starting in ${left}s…`; if (left % 4 === 0) TR.drv.update(tp('meta'), { beat: TR.drv.now() }); if (left <= 0) hostBegin(); }, 1000);
   } else {
     const w = $('#tWait'); if (w) w.textContent = 'Waiting for the host to start…';
+    TR.timer = setInterval(async () => {                    // host left the lobby: look again
+      const meta = await TR.drv.get(tp('meta'));
+      if (!TR.joined && !TR.cancelled && (!meta || TR.drv.now() - (meta.beat || meta.created) > 15000)) { trCleanup(); toast('That lobby closed, searching again'); startTournament(); }
+    }, 5000);
   }
   TR.unsub.push(TR.drv.on(tp('meta'), meta => { if (meta && meta.state === 'running' && !TR.joined) { TR.joined = true; m.classList.remove('on'); clientStart(); } }));
 }
 async function tourLobbyCancel() {
-  trCleanup();
+  TR.cancelled = true; trCleanup();
   if (!TR.id || !TR.drv) return;
   if (TR.host) { await TR.drv.txn('matchmaking/tour', v => (v && v.tid === TR.id ? null : undefined)); await TR.drv.remove(`tours/${TR.id}`); }
   else { await TR.drv.remove(tp(`players/${TR.me}`)); await TR.drv.txn(tp('count'), v => (v ? v - 1 : undefined)); }
@@ -2932,7 +2959,11 @@ async function hostBegin() {
   if (TR.hostEngine) return;
   clearInterval(TR.timer);
   const H = TR.hostEngine = { bots: {}, last: {}, prevPairs: {} };
-  if (TR.drv !== Net.drv || !Net.online()) {} else { await TR.drv.txn('matchmaking/tour', v => (v && v.tid === TR.id ? null : undefined)); }
+  if (TR.drv === Net.drv && Net.online()) {
+    await TR.drv.txn('matchmaking/tour', v => (v && v.tid === TR.id ? null : undefined));
+    await TR.drv.update(tp('meta'), { state: 'starting' });
+    await new Promise(r => setTimeout(r, 700));           // let anyone who was mid-join finish
+  }
   const ps = (await TR.drv.get(tp('players'))) || {};
   const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
   for (let i = Object.keys(ps).length, k = 0; i < TOUR_N; i++, k++) {
@@ -2940,7 +2971,7 @@ async function hostBegin() {
     H.bots[pid] = sd; ps[pid] = { name: names[k], bot: true, hearts: HEARTS };
   }
   await TR.drv.set(tp('players'), ps);
-  H.beat = setInterval(() => TR.drv.update(tp('meta'), { beat: Date.now() }), 5000);
+  H.beat = setInterval(() => TR.drv.update(tp('meta'), { beat: TR.drv.now() }), 5000);
   hostRound(1);
   if (!TR.joined) { TR.joined = true; $('#deckModal').classList.remove('on'); clientStart(); }
 }
@@ -3068,7 +3099,7 @@ async function clientStart() {
   }));
   TR.timer = setInterval(async () => {                 // the host vanished?
     if (TR.host || TR.out) return;
-    const m = await TR.drv.get(tp('meta')); if (m && m.state === 'running' && Date.now() - (m.beat || 0) > 30000) { toast('The host left, so the tournament ended'); tourOut(placeNow()); }
+    const m = await TR.drv.get(tp('meta')); if (m && m.state === 'running' && TR.drv.now() - (m.beat || 0) > 30000) { toast('The host left, so the tournament ended'); tourOut(placeNow()); }
   }, 10000);
 }
 const placeNow = () => 1 + Object.entries(TR.players).filter(([p, v]) => p !== TR.me && v.hearts > (TR.players[TR.me] || {}).hearts).length;
